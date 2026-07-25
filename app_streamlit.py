@@ -19,28 +19,25 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 import subprocess
 import sys
 import time
+import socket
 
-# Detectar si estamos corriendo en Streamlit Cloud o localmente
-# Streamlit Cloud define automáticamente variables como 'STREAMLIT_SERVER_PORT'
-if os.getenv("STREAMLIT_SERVER_PORT") or os.getenv("STREAMLIT_SHARING"):
-    # Verificar si ya están corriendo los puertos para evitar múltiples instancias en recargas
-    def is_port_in_use(port):
-        import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            return s.connect_ex(('127.0.0.1', port)) == 0
+# Verificar si ya están corriendo los puertos para evitar múltiples instancias en recargas
+def is_port_in_use(port):        
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
 
-    if not is_port_in_use(8000):
-        st.sidebar.info("Iniciando MCP de datos en segundo plano...")
-        subprocess.Popen([sys.executable, "mcp_datos.py"])
+if not is_port_in_use(8000):
+    st.sidebar.info("Iniciando MCP de datos en segundo plano...")
+    subprocess.Popen([sys.executable, "mcp_datos.py"])
         
-    if not is_port_in_use(8001):
-        st.sidebar.info("Iniciando MCP de agente en segundo plano...")
-        env = os.environ.copy()
-        env["MCP_AGENT_TRANSPORT"] = "http"
-        subprocess.Popen([sys.executable, "mcp_agente.py"], env=env)
-        
-    # Espera breve para dar tiempo a que los servidores inicien
-    time.sleep(2)
+if not is_port_in_use(8001):
+    st.sidebar.info("Iniciando MCP de agente en segundo plano...")
+    env = os.environ.copy()
+    env["MCP_AGENT_TRANSPORT"] = "http"
+    subprocess.Popen([sys.executable, "mcp_agente.py"], env=env)
+    
+# Espera breve para dar tiempo a que los servidores inicien
+time.sleep(20)
 
 
 load_dotenv()
