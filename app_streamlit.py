@@ -37,7 +37,7 @@ if not is_port_in_use(8001):
     subprocess.Popen([sys.executable, "mcp_agente.py"], env=env)
     
 # Espera breve para dar tiempo a que los servidores inicien
-time.sleep(20)
+time.sleep(2)
 
 
 load_dotenv()

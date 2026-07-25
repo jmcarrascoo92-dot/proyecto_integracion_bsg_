@@ -1,308 +1,111 @@
-# Clase 3 — Agente MCP con memoria sobre datos reales de e-commerce
+# Agente Analista de E-commerce con MCP
 
-## Propósito del proyecto
-
-Este proyecto continúa el laboratorio de Colab de la clase anterior. Conserva la idea central: un agente LangChain usa herramientas descubiertas desde un servidor MCP, y cada herramienta encapsula una consulta SQL explícita y revisable.
-
-La diferencia es que esta versión deja de usar datos demo. El MCP trabaja con el archivo real `data/ecommerce_orders_dataset.csv`, con 30.000 órdenes, 8.683 clientes y 41 variables sobre ventas, productos, logística, comportamiento, devoluciones y rentabilidad.
-
-El proyecto permite enseñar cuatro ideas a la vez:
-
-1. cómo convertir un CSV real en una base SQLite reproducible;
-2. cómo publicar capacidades analíticas personalizadas como tools MCP;
-3. cómo conectar un agente LangChain + Gemini a esas tools y añadir memoria de corto plazo;
-4. cómo empaquetar el agente como un MCP que puede ser consumido desde Streamlit o Claude Desktop.
-
----
+## Problema
+Este agente está diseñado para un **analista comercial o de negocio** que necesita consultar y analizar datos reales de ventas, comportamiento de clientes y logística de un e-commerce sin necesidad de escribir código SQL.
+Resuelve la necesidad de obtener respuestas verificables y métricas exactas basadas en la base de datos de órdenes (30.000 registros). 
+Límites: El agente es de **solo lectura**, no puede modificar datos, aprobar órdenes ni ejecutar instrucciones ambiguas que comprometan el sistema. No inventa cifras ni datos que no estén respaldados por el dataset subyacente.
 
 ## Arquitectura
-
 ```text
-                           ┌────────────────────────────┐
-                           │       Claude Desktop       │
-                           │    Host MCP externo        │
-                           └──────────────┬─────────────┘
-                                          │ stdio
-                                          ▼
-┌──────────────────────┐      ┌────────────────────────────┐
-│  app_streamlit.py    │ HTTP │      mcp_agente.py         │
-│  cliente MCP propio  │─────▶│ MCP que publica el agente  │
-│ chat + memoria +     │      │ resolver_consulta_ecommerce│
-│ traza visible        │      └──────────────┬─────────────┘
-└──────────────────────┘                     │
-                                               ▼
-                                    ┌──────────────────────┐
-                                    │     agent_core.py    │
-                                    │ LangChain + Gemini   │
-                                    │ memoria por session  │
-                                    └──────────┬───────────┘
-                                               │ cliente MCP HTTP
-                                               ▼
-                                    ┌──────────────────────┐
-                                    │    mcp_datos.py      │
-                                    │ tools SQL de lectura │
-                                    └──────────┬───────────┘
-                                               ▼
-                              SQLite: ecommerce_orders.db
-                                               ▲
-                                               │ importación reproducible
-                       ecommerce_orders_dataset.csv (dataset real)
+Usuario -> Streamlit -> Agente LangChain + Gemini -> MCP (mcp_datos.py) -> SQLite (ecommerce_orders.db)
 ```
+- **Streamlit**: Interfaz web (Frontend) que gestiona el chat, la memoria de sesión temporal (`session_id`) y visualiza las respuestas y trazas de las tools.
+- **Agente LangChain + Gemini**: Capa de inteligencia que procesa el lenguaje natural, selecciona las tools adecuadas del MCP y compone la respuesta final con contexto y memoria.
+- **MCP de dominio**: Expone herramientas funcionales seguras de lectura mediante el SDK FastMCP.
+- **Datos**: Base de datos SQLite generada a partir del dataset real en formato CSV.
 
-La interfaz no contiene la inteligencia. Streamlit solo consume la tool pública del agente. Claude Desktop también consume la misma tool, sin conocer los detalles del modelo, la memoria, las queries ni la base de datos.
+## Tools MCP
 
----
+| Tool | Propósito | Entrada | Salida | Riesgo |
+| --- | --- | --- | --- | --- |
+| `buscar_clientes` | Encuentra clientes por ID, ubicación, segmento o membresía. | `texto` (str), `limite` (int, opcional) | Lista de clientes con sus IDs y métricas básicas (JSON). | Lectura: Bajo |
+| `resumen_cliente` | Resume compras, gasto, utilidad y ticket de un cliente. | `customer_id` (str) | KPIs de rentabilidad y actividad del cliente (JSON). | Lectura: Bajo |
+| `perfil_compras_cliente` | Muestra categorías y subcategorías preferidas de un cliente. | `customer_id` (str), `limite` (int, opcional) | Categorías con métricas de compras y unidades (JSON). | Lectura: Bajo |
+| `experiencia_cliente` | Evalúa devoluciones, rating, días de entrega y estados. | `customer_id` (str) | Métricas de satisfacción y logística (JSON). | Lectura: Bajo |
+| `ventas_por_dimension` | Ranking de ventas y utilidad por país, categoría, segmento, etc. | `dimension` (str), `year` (int, opc), `limite` (int, opc) | Agrupación de ingresos y utilidades por la dimensión indicada (JSON). | Lectura: Bajo |
+| `tendencia_ventas` | Resume ventas mensuales, órdenes y ticket promedio. | `year` (int, opc), `country` (str, opc) | Serie de tiempo mensual de KPIs (JSON). | Lectura: Bajo |
+| `detalle_orden` | Recupera el detalle completo de una orden específica. | `order_id` (int) | Toda la información transaccional de una orden (JSON). | Lectura: Bajo |
 
-## Progresión desde Colab a Python
+## Memoria
+Usamos un identificador único por conversación llamado `session_id` (enlazado al `thread_id` de LangGraph) y una **memoria de corto plazo** gestionada por `InMemorySaver` de LangGraph.
+Mantenemos una ventana máxima de N mensajes (configurada por la variable `MEMORY_WINDOW_MESSAGES`, por defecto 8) para limitar el contexto enviado al modelo y evitar sobrepasar el límite de tokens.
+**Limitaciones**: La memoria se mantiene activa únicamente mientras el proceso de Streamlit y el agente se encuentren en ejecución. Se reinicia y se pierde al apagar la aplicación o al crear una nueva conversación (nuevo `session_id`).
 
-| En el notebook anterior | En este proyecto |
-|---|---|
-| CSV o datos cargados en la sesión | CSV real incluido en `data/` |
-| SQLite preparado en una celda | `import_dataset_to_sqlite.py` reproducible |
-| MCP con queries SQL | `mcp_datos.py` con siete tools de negocio |
-| Agente LangChain ejecutado en notebook | `agent_core.py` desacoplado de la interfaz |
-| Consulta aislada | Conversación con `session_id` y memoria temporal |
-| Un solo consumidor | Streamlit y Claude Desktop |
+## Instalación local
 
-La regla de diseño no cambia: el LLM no escribe SQL libre. Selecciona tools con propósitos acotados; cada tool ejecuta SQL parametrizado y de solo lectura.
-
----
-
-## Dataset real
-
-`data/ecommerce_orders_dataset.csv` contiene 30.000 órdenes entre 2023-01-01 y 2026-12-31. Incluye, entre otros, los campos:
-
-```text
-Order_ID, Customer_ID, Order_Date, Country, City, Customer_Segment,
-Product_Category, Product_Subcategory, Brand, Quantity, Order_Amount,
-Traffic_Source, Device_Type, Membership_Status, Shipping_Method,
-Delivery_Days, Order_Status, Returned, Review_Rating,
-Customer_Lifetime_Value, Profit_Amount, Season
+### 1. Crear entorno virtual
+En Windows PowerShell:
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 ```
-
-El dataset usa datos de ejemplo y sirve para aprendizaje técnico. No debe usarse como evidencia comercial real.
-
-### Importar el CSV a SQLite
-
-```bash
-python data/import_dataset_to_sqlite.py
-```
-
-El script valida las columnas esperadas, normaliza `Order_Date`, crea `data/ecommerce_orders.db`, importa la tabla `orders` y agrega índices para consultas frecuentes. El archivo `.db` no se sube al repositorio porque puede regenerarse a partir del CSV.
-
----
-
-## Tools personalizadas del MCP de datos
-
-| Tool | Capacidad de negocio | Columnas reales principales |
-|---|---|---|
-| `buscar_clientes` | Encuentra clientes por ID, ubicación, segmento o membresía | `Customer_ID`, `Country`, `City`, `Customer_Segment` |
-| `resumen_cliente` | Resume gasto, utilidad, ticket, actividad y CLV | `Order_Amount`, `Profit_Amount`, `Customer_Lifetime_Value` |
-| `perfil_compras_cliente` | Muestra categorías y subcategorías preferidas | `Product_Category`, `Product_Subcategory`, `Discount_Percent` |
-| `experiencia_cliente` | Evalúa devoluciones, rating, despacho y estados de orden | `Returned`, `Review_Rating`, `Delivery_Days`, `Order_Status` |
-| `ventas_por_dimension` | Compara facturación y utilidad por país, categoría, segmento o canal | `Country`, `Product_Category`, `Traffic_Source`, `Profit_Amount` |
-| `tendencia_ventas` | Analiza ventas mensuales, utilidad, ticket y devoluciones | `Year`, `Month`, `Order_Amount`, `Profit_Amount` |
-| `detalle_orden` | Recupera el detalle de una orden específica | `Order_ID` y atributos de la transacción |
-
-Estas tools están deliberadamente separadas. No existe una tool genérica como `ejecutar_sql(sql)` porque sería insegura, difícil de gobernar y poco clara para el LLM.
-
----
-
-## Requisitos
-
-- Python 3.11 o superior recomendado.
-- Cuenta de Google AI Studio y clave de Gemini API (`GOOGLE_API_KEY`).
-- Claude Desktop solo para la demostración de consumo externo.
-- Puertos locales 8000 y 8001 disponibles.
-
-El modelo configurado por defecto es `gemini-3.1-flash-lite-preview`. Se toma desde `GEMINI_MODEL` para que el laboratorio no dependa de un identificador rígido: si Google cambia el alias de preview o habilita una versión estable, modifica solo esa variable en `.env`.
-
----
-
-## Instalación
-
-### 1. Crear el entorno virtual
-
-macOS / Linux:
-
+En macOS/Linux:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 ```
 
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
 ### 2. Instalar dependencias
-
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configurar variables de entorno
-
-macOS / Linux:
-
-```bash
-cp .env.example .env
-```
-
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Edita `.env`:
-
+### 3. Configurar variables de entorno (.env)
+Crear un archivo `.env` basado en `.env.example`:
 ```text
-GOOGLE_API_KEY=tu_clave
-GEMINI_MODEL=gemini-3.1-flash-lite-preview
-DATA_MCP_URL=http://127.0.0.1:8000/mcp
-AGENT_MCP_URL=http://127.0.0.1:8001/mcp
+GOOGLE_API_KEY="tu_clave_aqui"
+GEMINI_MODEL="gemini-3.1-flash-lite-preview"
+DATA_MCP_URL="http://127.0.0.1:8000/mcp"
+AGENT_MCP_URL="http://127.0.0.1:8001/mcp"
 MEMORY_WINDOW_MESSAGES=8
 ```
 
-### 4. Cargar los datos reales
-
+### 4. Preparar la Base de Datos SQLite
+Para convertir el CSV incluido a la base SQLite requerida:
 ```bash
 python data/import_dataset_to_sqlite.py
 ```
 
-### 5. Comprobar el entorno
+### 5. Ejecutar MCP y Streamlit
+Abre dos terminales con el entorno virtual activado.
 
-```bash
-python scripts/check_environment.py
-```
-
----
-
-## Ejecutar con Streamlit
-
-Abre tres terminales en la carpeta del proyecto, con el entorno virtual activo.
-
-Terminal 1: MCP de datos.
-
+**Terminal 1 (Servidor MCP):**
 ```bash
 python mcp_datos.py
 ```
 
-Terminal 2: MCP del agente por HTTP.
-
-macOS / Linux:
-
-```bash
-MCP_AGENT_TRANSPORT=http python mcp_agente.py
-```
-
-Windows PowerShell:
-
-```powershell
-$env:MCP_AGENT_TRANSPORT="http"
-python mcp_agente.py
-```
-
-Terminal 3: aplicación Streamlit.
-
+**Terminal 2 (Interfaz Streamlit):**
 ```bash
 streamlit run app_streamlit.py
 ```
+*(Opcionalmente, puedes ejecutar `mcp_agente.py` si deseas consumir el agente como un servidor MCP externo con Claude Desktop).*
 
-Streamlit mostrará el chat, `session_id`, tamaño de ventana de memoria y traza de herramientas utilizadas. Esto permite que la clase observe qué herramienta fue elegida y qué resultados intermedios llegaron al agente.
+## Despliegue
+La aplicación se encuentra desplegada en **Streamlit Community Cloud**, que actúa como plataforma para la interfaz web (*frontend*). Por su parte, el servidor MCP (`mcp_datos.py`) se expone como un servicio HTTP remoto, alojado en la misma infraestructura de **Streamlit Community Cloud**.
 
-### Preguntas sugeridas para probar
+Para hacer posible este despliegue fue necesario adaptar el código a las restricciones de ejecución de la plataforma. En particular, se implementó un mecanismo que inicia los servidores en segundo plano mediante `subprocess.Popen`, complementado con una pausa controlada utilizando `time.sleep`, con el fin de proporcionar el tiempo necesario para que los servicios se inicialicen correctamente antes de atender las solicitudes de la aplicación.
 
-```text
-Busca clientes Premium y dime cuál tiene mayor facturación.
-```
+La conexión entre la app Streamlit desplegada y el MCP se configura mediante la variable de entorno `DATA_MCP_URL` alojada en la sección "Secrets" de Streamlit Community Cloud. 
 
-```text
-Ahora analiza sus categorías preferidas y su experiencia de compra.
-```
+## Pruebas
+**Escenarios de prueba obligatorios realizados:**
+1. **Consulta directa**: 
+   - *Pregunta*: "Revisa el detalle de la orden 615717." 
+   - *Resultado esperado*: El agente identifica y extrae los detalles precisos (comprador, monto, fecha) mediante la tool `detalle_orden`.
+2. **Consulta compuesta**: 
+   - *Pregunta*: "Busca clientes Premium en Germany y analiza el perfil de compras del que más gasta."
+   - *Resultado esperado*: El agente usa primero `buscar_clientes` y luego, con el ID devuelto, ejecuta `perfil_compras_cliente`.
+3. **Referencia con memoria**:
+   - *Pregunta 1*: "Busca a un cliente llamado 'John Doe' o similar." 
+   - *Pregunta 2*: "¿Cuál es su experiencia de cliente respecto a las devoluciones?"
+   - *Resultado esperado*: El agente recuerda el Customer_ID de John Doe hallado en el primer paso y consulta `experiencia_cliente` sin volver a preguntar su ID.
+4. **Dato inexistente**:
+   - *Pregunta*: "Busca el detalle de la orden 999999999."
+   - *Resultado esperado*: La tool no encuentra resultados. El agente comunica clara y amablemente que la orden no existe, sin alucinar datos.
+5. **Consulta fuera de alcance**:
+   - *Pregunta*: "Elimina la orden 615717" o "¿Cuál es el clima hoy?"
+   - *Resultado esperado*: El agente responde educadamente que sus capacidades solo incluyen consultas de analítica de e-commerce sobre ventas y órdenes (solo lectura), negándose a ejecutar la acción.
 
-```text
-Compara las ventas por categoría durante 2025.
-```
-
-```text
-Analiza la tendencia mensual de ventas de Germany en 2025.
-```
-
-```text
-Revisa el detalle de la orden 615717.
-```
-
-La segunda consulta prueba la memoria: “sus” debe referirse al cliente de la primera consulta. Presiona “Nueva conversación” en Streamlit para comprobar que un nuevo `session_id` no hereda el contexto anterior.
-
----
-
-## Ejecutar desde Claude Desktop
-
-Claude Desktop funciona como host MCP y debe iniciar `mcp_agente.py` mediante `stdio`. El MCP de datos debe seguir activo por HTTP.
-
-1. Mantén en ejecución `python mcp_datos.py`.
-2. Abre `config/claude_desktop_config.example.json`.
-3. Reemplaza la ruta de ejemplo por la ruta absoluta real de `mcp_agente.py`.
-4. Agrega tu API key de forma segura según el entorno de tu equipo.
-5. Reinicia Claude Desktop.
-
-Claude Desktop descubrirá una única capacidad pública:
-
-```text
-resolver_consulta_ecommerce(mensaje, session_id, canal)
-```
-
-Ese es el punto pedagógico central: Claude no consume una tabla ni queries SQL. Consume un servicio agentivo que, internamente, coordina herramientas del MCP de datos.
-
----
-
-## Memoria de corto plazo
-
-`agent_core.py` implementa memoria temporal con tres piezas:
-
-```python
-CHECKPOINTER = InMemorySaver()
-```
-
-Guarda el estado de la conversación mientras el proceso permanece encendido.
-
-```python
-{"configurable": {"thread_id": session_id}}
-```
-
-Asocia los turnos a una conversación específica. En el proyecto `session_id` se traduce al `thread_id` que usa LangGraph.
-
-```python
-@before_model
-def ventana_contexto(...):
-```
-
-Limita los mensajes que se entregan al modelo. La variable `MEMORY_WINDOW_MESSAGES` controla el tamaño aproximado de la ventana. Esto es equivalente, a nivel conceptual, a `ConversationBufferWindowMemory(k=...)`, pero sigue el enfoque actual de estado + checkpointer usado por LangChain/LangGraph.
-
-Esta memoria no es conocimiento permanente. Se elimina al reiniciar el proceso del agente y debe reemplazarse por un checkpointer persistente en un entorno productivo.
-
----
-
-## Responsabilidad de cada archivo
-
-| Archivo | Rol |
-|---|---|
-| `data/ecommerce_orders_dataset.csv` | Fuente de datos real del laboratorio. |
-| `data/import_dataset_to_sqlite.py` | Conversión reproducible CSV → SQLite. |
-| `mcp_datos.py` | Servidor MCP de herramientas analíticas SQL. |
-| `agent_core.py` | Agente LangChain + Gemini, memoria y trazabilidad. |
-| `mcp_agente.py` | Servidor MCP que empaqueta al agente. |
-| `app_streamlit.py` | Cliente MCP y visualizador del proceso. |
-| `config/claude_desktop_config.example.json` | Plantilla para conectar Claude Desktop. |
-
----
-
-## Límites y extensiones
-
-Esta versión es adecuada para laboratorio local. Para un despliegue real convendría sustituir SQLite por una base administrada, `InMemorySaver` por persistencia compartida, las URLs locales por servicios desplegados y añadir autenticación, autorización, límites de tasa, logging centralizado, monitoreo y pruebas automatizadas.
-
-No expongas `mcp_datos.py` a internet sin controles. Aunque las tools sean de solo lectura, los datos pueden requerir protección y permisos.
+## Enlaces
+- **App Streamlit Pública**: [https://proyectointegracionbsg-jmc.streamlit.app/](https://proyectointegracionbsg-jmc.streamlit.app/)
+- **Repositorio**: [https://github.com/jmcarrascoo92-dot/proyecto_integracion_bsg_](https://github.com/jmcarrascoo92-dot/proyecto_integracion_bsg_)
