@@ -2,6 +2,5 @@
 __pycache__/
 *.py[cod]
 .env
-data/ecommerce_orders.db
 .streamlit/secrets.toml
 .DS_Store
