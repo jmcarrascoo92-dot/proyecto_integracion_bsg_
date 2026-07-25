@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ecommerce-agent-with-memory": {
+      "command": "python",
+      "args": [
+        "/RUTA/ABSOLUTA/AL/PROYECTO/mcp_agente.py"
+      ],
+      "env": {
+        "GOOGLE_API_KEY": "PEGA_AQUI_TU_CLAVE_O_USA_UN_ENV_SEGURO",
+        "GEMINI_MODEL": "gemini-3.1-flash-lite-preview",
+        "DATA_MCP_URL": "http://127.0.0.1:8000/mcp",
+        "MEMORY_WINDOW_MESSAGES": "8"
+      }
+    }
+  }
+}
